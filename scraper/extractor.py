@@ -4,6 +4,15 @@ import json
 import requests
 from bs4 import BeautifulSoup
 from datetime import datetime
+from openai import OpenAI
+from pydantic import BaseModel
+from typing import Literal
+
+class RTDEntry(BaseModel):
+    title: str
+    description: str
+    category: Literal['Spirits-Based', 'Wine-Based', 'Energy Hybrid', 'Cider-Based', 'Market Trend']
+    company: str
 
 DASHBOARD_DATA_PATH = os.path.join(os.path.dirname(__file__), '..', 'dashboard', 'src', 'data', 'rtd_scan.json')
 
@@ -33,17 +42,49 @@ def scrape_article(url):
 
 def process_with_llm(article):
     """
-    Mock function representing the LLM structurizer.
-    In production, this passes 'article' to OpenAI/Anthropic to extract exact categorizations.
+    Uses OpenAI to extract structured categorization from the scraped text.
     """
-    return {
-        "id": str(int(datetime.now().timestamp())),
-        "date": datetime.now().strftime("%Y-%m-%d"),
-        "title": article['title'],
-        "description": f"{article['content'][:250]}...",
-        "category": "Market Trend", 
-        "company": "Scraped Source"
-    }
+    try:
+        client = OpenAI() # Requires OPENAI_API_KEY environment variable
+        completion = client.beta.chat.completions.parse(
+            model="gpt-4o",
+            messages=[
+                {"role": "system", "content": "You are an expert beverage industry analyst extracting structured intelligence."},
+                {"role": "user", "content": prompt}
+            ],
+            response_format=RTDEntry,
+        )
+        
+        result = completion.choices[0].message.parsed
+        return {
+            "id": str(int(datetime.now().timestamp())),
+            "date": datetime.now().strftime("%Y-%m-%d"),
+            "title": result.title,
+            "description": result.description,
+            "category": result.category,
+            "company": result.company
+        }
+    except Exception as e:
+        print(f"Error calling OpenAI API or missing key: {e}. Falling back to heuristic extraction...", file=sys.stderr)
+        
+        # Heuristic Fallback Extraction
+        text = (article['title'] + " " + article['content']).lower()
+        category = "Spirits-Based"
+        if "wine" in text or "spritz" in text or "sangria" in text:
+            category = "Wine-Based"
+        elif "energy" in text or "caffeine" in text or "guarana" in text:
+            category = "Energy Hybrid"
+        elif "cider" in text or "apple" in text:
+            category = "Cider-Based"
+            
+        return dict(
+            id=str(int(datetime.now().timestamp())),
+            date=datetime.now().strftime("%Y-%m-%d"),
+            title=article['title'],
+            description=f"{article['content'][:250]}...",
+            category=category,
+            company="Unknown"
+        )
 
 def append_to_dashboard(new_entry):
     """Appends to the Next.js JSON datastore."""
